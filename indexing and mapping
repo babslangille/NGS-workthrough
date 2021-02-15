@@ -1,0 +1,62 @@
+#!/bin/bash
+#
+#
+# usage: program.sh <ref.fa> <path to raw data>
+#
+# Automated NGS mapping
+# Terry Bertozzi and Barbara Langille 
+# November 2016
+
+
+
+function error_exit
+{
+    # Exit function due to fatal error
+    # Accepts 1 arg:
+    # string - descriptive error message
+
+    echo "${PROGNAME}: ${1:-"Unknown error"}" 1>&2
+    exit 1
+}
+
+
+#------adjust these for your run-----
+BBMDIR="/home/blangille/src/bbmap/bbduk.sh"
+THREADS=10
+#------------------------------------
+
+
+
+# go to the working directory
+cd $2
+
+for file in *_R1.fastq.gz
+do
+
+	FILESTEM=${file%_*}	
+
+	# run all paired data through bbmap
+	$BBMDIR in=$file in2=$FILESTEM"_R2.fastq.gz" out=../clean/$FILESTEM"_R1_clean.fq.gz" out2=../clean/$FILESTEM"_R2_clean.fq.gz" outs=../clean/$FILESTEM"_singletons.fq.gz" literal=AGATCGGAAGAGCAC,AGATCGGAAGAGCGT ktrim=r k=15 mink=15 hdist=0 tbo qtrim=rl trimq=20 minlength=30 threads=$THREADS || error_exit "$LINENO: Error cleaning R1 or R2"
+
+	# run cleaned data through fastqc
+	mkdir -p ../clean/fastqc	
+	fastqc --noextract --threads $THREADS -o ../clean/fastqc ../clean/$FILESTEM"_R1_clean.fq.gz" ../clean/$FILESTEM"_R2_clean.fq.gz" ../clean/$FILESTEM"_singletons.fq.gz"
+
+	# index reference *need to add an if clause here because only need one
+	#if <*.fai> file exists move on
+	bwa index ../refs/LpalREF_concat.fa
+
+	# mapping of PE and singletons to reference
+	mkdir -p ../clean/files
+	bwa mem -t $THREADS -R '@RG\tID:PE\tSM:' ../refs/LpalREF_concat.fa <(zcat ../clean/$FILESTEM"_R1_clean.fq.gz) <(zcat ../clean/$FILESTEM"_R2_clean.fq.gz) | samtools view -hu -q 1 -@ $THREADS - | samtools sort -o ../clean/files/$FILESTEM"_PE.sorted.bam" -T temp.sort -@ $THREADS - || error_exit "$LINENO: Error mapping PE"
+	
+	bwa mem -t $THREADS -R '@RG\tID:Singleton\tSM:' ../refs/LpalREF_concat.fa <(zcat ../clean/$FILESTEM"_singletons.fq.gz") | samtools view -hu -q 1 -@ $THREADS - | samtools sort -o ../clean/files/$FILESTEM"_singletons.sorted.bam" -T temp.sort -@ $THREADS - || error_exit "$LINENO: Error mapping singletons"
+
+	# merge PE and singletons sorted.bam together
+	samtools merge ../clean/files/$FILESTEM"_PEandSingletons.bam" ../clean/files/$FILESTEM"_PE.sorted.bam" ../clean/files/$FILESTEM"_singletons.sorted.bam"
+
+	# index PEandSingletons.bam
+	samtools index ../clean/files/$FILESTEM"_PEandSingletons.bam"
+
+
+done
